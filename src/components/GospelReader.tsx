@@ -46,6 +46,7 @@ interface GospelReaderProps {
   onLockedDayAttempt: (day: number) => void;
   onLockedChapterAttempt: (book: GospelKey, chapter: number) => void;
   onShareText: (text: string) => void;
+  onReadingStateChange?: (isReading: boolean) => void;
 }
 
 type ReaderTab = 'today' | GospelKey;
@@ -71,6 +72,7 @@ export const GospelReader: React.FC<GospelReaderProps> = ({
   onLockedDayAttempt,
   onLockedChapterAttempt,
   onShareText,
+  onReadingStateChange,
 }) => {
   const [datasets, setDatasets] = useState<{ ar?: GospelsDataset; en?: GospelsDataset }>({});
   const [loading, setLoading] = useState(true);
@@ -155,6 +157,32 @@ export const GospelReader: React.FC<GospelReaderProps> = ({
   };
 
   const dayPlan = useMemo(() => getDayPlan(currentDay, readingPlan), [currentDay, readingPlan]);
+  const totalTodayCount = dayPlan.readings.length;
+  const remainingTonightCount = useMemo(() => {
+    if (isDayCompleted) return 0;
+    return dayPlan.readings.filter(
+      (r) => !passedChapters[getChapterKey(r.book, r.chapter)]
+    ).length;
+  }, [dayPlan.readings, isDayCompleted, passedChapters]);
+
+  const remainingTonightLabel = useMemo(() => {
+    if (totalTodayCount === 0) {
+      return lang === 'ar' ? 'مراجعة وتأمل' : 'Review';
+    }
+    if (remainingTonightCount <= 0) {
+      return lang === 'ar' ? 'اكتملت لليلة' : 'Done tonight';
+    }
+    if (lang === 'ar') {
+      if (remainingTonightCount === 1) return 'باقي أصحاح ١ لليلة';
+      if (remainingTonightCount === 2) return 'باقي أصحاحين لليلة';
+      if (remainingTonightCount <= 10) {
+        return `باقي ${formatNumber(remainingTonightCount, 'ar')} أصحاحات لليلة`;
+      }
+      return `باقي ${formatNumber(remainingTonightCount, 'ar')} أصحاحاً لليلة`;
+    }
+    return `${remainingTonightCount} ${remainingTonightCount === 1 ? 'chapter' : 'chapters'} left tonight`;
+  }, [lang, totalTodayCount, remainingTonightCount]);
+
   const activeDataset = datasets[lang];
 
   // Build chapters to render
@@ -187,6 +215,18 @@ export const GospelReader: React.FC<GospelReaderProps> = ({
       ];
     }
   }, [activeDataset, activeTab, dayPlan, lang, selectedChapter]);
+
+  const isAnyVisibleChapterExpanded = useMemo(
+    () =>
+      chaptersToRender.some((ch) =>
+        Boolean(expandedChapters[getChapterKey(ch.bookKey, ch.chapter)])
+      ),
+    [chaptersToRender, expandedChapters]
+  );
+
+  useEffect(() => {
+    onReadingStateChange?.(isAnyVisibleChapterExpanded);
+  }, [isAnyVisibleChapterExpanded, onReadingStateChange]);
 
   const handleShareCurrentReading = () => {
     if (chaptersToRender.length === 0) return;
@@ -275,15 +315,28 @@ export const GospelReader: React.FC<GospelReaderProps> = ({
             role="tab"
             aria-selected={activeTab === 'today'}
             onClick={() => handleTabChange('today')}
-            className={`min-h-[40px] px-4 py-2 app-control text-xs sm:text-sm font-bold whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
+            className={`min-h-[40px] px-4 py-2 app-control text-xs sm:text-sm font-bold whitespace-nowrap shrink-0 transition-colors cursor-pointer flex items-center gap-2 ${
               activeTab === 'today'
                 ? 'bg-[var(--accent)] text-white'
                 : 'bg-stone-100 dark:bg-white/5 text-stone-700 dark:text-stone-300 hover:bg-stone-200 dark:hover:bg-white/10'
             }`}
           >
-            {lang === 'ar'
-              ? `ورد اليوم (${formatReadingRange(dayPlan.readings, 'ar')})`
-              : `Today (${formatReadingRange(dayPlan.readings, 'en')})`}
+            <span>
+              {lang === 'ar'
+                ? `القراءة اليومية (${formatReadingRange(dayPlan.readings, 'ar')})`
+                : `Daily Reading (${formatReadingRange(dayPlan.readings, 'en')})`}
+            </span>
+            <span
+              className={`px-2 py-0.5 rounded-md text-[11px] font-bold tabular-nums ${
+                activeTab === 'today'
+                  ? 'bg-white/20 text-white'
+                  : remainingTonightCount === 0
+                  ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                  : 'bg-[var(--accent-soft)] text-[var(--accent)]'
+              }`}
+            >
+              {remainingTonightLabel}
+            </span>
           </button>
 
           {GOSPEL_ORDER.map((g) => {

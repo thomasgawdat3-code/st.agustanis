@@ -16,14 +16,19 @@ import { ProgressAndDayNav } from './components/ProgressAndDayNav';
 import { ProgressHeart } from './components/ProgressHeart';
 import { OfflineIndicator, PWABanner } from './components/PWABanner';
 import { QuoteAndPractices } from './components/QuoteAndPractices';
+import { ReadingBuddy } from './components/ReadingBuddy';
 import { ServantPanel } from './components/ServantPanel';
 import { DEFAULT_LAYOUT_SETTINGS, DEFAULT_SECTION_ORDER } from './data/defaultConfig';
-import { formatNumber, getDayPlan, getQuoteDayForPlanDay } from './data/readingPlan';
+import { formatNumber, getChapterKey, getDayPlan, getQuoteDayForPlanDay } from './data/readingPlan';
 import { useAppState } from './hooks/useAppState';
 import { useCalmMusic } from './hooks/useCalmMusic';
 import type { PageSectionId } from './types';
 
 export default function App() {
+  const [adminOpen, setAdminOpen] = useState(false);
+  const [servantOpen, setServantOpen] = useState(false);
+  const [isReadingChapter, setIsReadingChapter] = useState(false);
+
   const {
     state,
     activeUser,
@@ -63,11 +68,9 @@ export default function App() {
     resetConfigToDefaults,
     jumpToToday,
     refreshCloudUsers,
-  } = useAppState();
+  } = useAppState(adminOpen || servantOpen);
 
   const { isMusicPlaying, toggleMusic } = useCalmMusic();
-  const [adminOpen, setAdminOpen] = useState(false);
-  const [servantOpen, setServantOpen] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
 
   const showToast = (msg: string) => {
@@ -124,6 +127,12 @@ export default function App() {
   const currentQuote = state.config.quotes.find((q) => q.day === mappedQuoteDay);
   const weekPractices = state.config.practices.filter((p) => p.week === dayPlan.week);
   const isDayCompleted = completedDays.includes(currentDay);
+  const remainingTonightChapters = isDayCompleted
+    ? 0
+    : dayPlan.readings.filter(
+        (r) => !passedChapters[getChapterKey(r.book, r.chapter)]
+      ).length;
+  const totalRemainingChapters = Math.max(0, stats.totalChapters - stats.completedChapters);
   const existingUsersList = Object.values(state.users);
   const christmasEnabled = state.config.christmasTheme !== false;
   const layout = {
@@ -366,6 +375,7 @@ export default function App() {
           onLockedDayAttempt={handleLockedDayAttempt}
           onLockedChapterAttempt={() => handleLockedChapterAttempt()}
           onShareText={handleShareText}
+          onReadingStateChange={setIsReadingChapter}
         />
       );
     }
@@ -509,6 +519,29 @@ export default function App() {
           onClose={() => setServantOpen(false)}
           onSaveServantContent={saveServantContent}
           onNotify={showToast}
+        />
+      )}
+
+      {/* Cute Roaming Reading Buddy */}
+      {activeUser && (
+        <ReadingBuddy
+          lang={state.lang}
+          theme={state.theme}
+          christmasTheme={christmasEnabled}
+          userName={activeUser.fullName}
+          remainingTonightChapters={remainingTonightChapters}
+          totalRemainingChapters={totalRemainingChapters}
+          completedChapters={stats.completedChapters}
+          totalChapters={stats.totalChapters}
+          streak={stats.streak}
+          percent={stats.percent}
+          isReading={isReadingChapter}
+          paused={adminOpen || servantOpen}
+          onGoToReader={() => {
+            document
+              .querySelector('[data-el="reader"]')
+              ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }}
         />
       )}
 

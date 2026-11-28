@@ -55,6 +55,10 @@ export const ProgressHeart: React.FC<ProgressHeartProps> = ({
               <clipPath id={clipId}>
                 <path d="M50 85.5C48.3 85.5 46.7 84.9 45.4 83.7C21.2 61.9 8 48.2 8 30.8C8 17.6 18.4 7.5 31.6 7.5C39.2 7.5 46.2 11.1 50 17.1C53.8 11.1 60.8 7.5 68.4 7.5C81.6 7.5 92 17.6 92 30.8C92 48.2 78.8 61.9 54.6 83.7C53.3 84.9 51.7 85.5 50 85.5Z" />
               </clipPath>
+              <linearGradient id={`${clipId}-fill`} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="var(--accent)" />
+                <stop offset="100%" stopColor="var(--accent-hover)" />
+              </linearGradient>
             </defs>
 
             {/* Empty heart base */}
@@ -72,16 +76,34 @@ export const ProgressHeart: React.FC<ProgressHeartProps> = ({
                 y={fillTopY}
                 width="100"
                 height="96"
-                fill="var(--accent)"
+                fill={`url(#${clipId}-fill)`}
                 style={{ transition: 'y 550ms cubic-bezier(0.16, 1, 0.3, 1)' }}
               />
               {clamped > 0 && clamped < 100 && (
-                <path
-                  d={`M0 ${fillTopY} Q 25 ${fillTopY - 3.5}, 50 ${fillTopY} T 100 ${fillTopY} L 100 96 L 0 96 Z`}
-                  fill="var(--accent)"
-                  style={{ transition: 'd 550ms cubic-bezier(0.16, 1, 0.3, 1)' }}
-                />
+                <>
+                  <path
+                    d={`M0 ${fillTopY} Q 25 ${fillTopY - 4}, 50 ${fillTopY} T 100 ${fillTopY} L 100 96 L 0 96 Z`}
+                    fill="var(--accent)"
+                    style={{ transition: 'd 550ms cubic-bezier(0.16, 1, 0.3, 1)' }}
+                  />
+                  <path
+                    d={`M0 ${fillTopY + 1} Q 25 ${fillTopY + 4}, 50 ${fillTopY + 1} T 100 ${fillTopY + 1}`}
+                    fill="none"
+                    stroke="#FFFFFF"
+                    strokeOpacity="0.45"
+                    strokeWidth="1.4"
+                  />
+                </>
               )}
+              {/* Delicate specular highlight sheen on upper left lobe */}
+              <path
+                d="M21 20 C 17 24, 16 32, 19 38"
+                fill="none"
+                stroke="#FFFFFF"
+                strokeOpacity="0.35"
+                strokeWidth="2.6"
+                strokeLinecap="round"
+              />
             </g>
 
             {/* Inner percentage text */}

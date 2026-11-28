@@ -39,7 +39,6 @@ import {
   subscribeAllParticipants,
   subscribeAppConfig,
   subscribeParticipantSelf,
-  subscribeParticipantsSummary,
   syncParticipantProgressToCloud,
 } from '../firebase';
 import type {
@@ -252,7 +251,7 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
-export function useAppState() {
+export function useAppState(monitoringOpen = false) {
   const [state, setState] = useState<AppState>(createInitialState);
   const [adminUser, setAdminUser] = useState<FirebaseUser | null>(null);
   const [cloudUsers, setCloudUsers] = useState<UserAccount[]>([]);
@@ -262,6 +261,8 @@ export function useAppState() {
   stateRef.current = state;
 
   const syncTimerRef = useRef<number | null>(null);
+  const pendingSyncRef = useRef<{ user: UserAccount; needsSummary: boolean } | null>(null);
+  const lastSummaryFetchAtRef = useRef<number>(0);
 
   useEffect(() => {
     try {
@@ -306,22 +307,28 @@ export function useAppState() {
     });
   }, []);
 
-  // When verified admin is signed in, listen live to all participants registered across all devices
+  // Only listen live to all participants when verified admin actually opens the monitoring panel
   useEffect(() => {
-    if (!isAdminVerified) {
-      setCloudUsers([]);
+    if (!isAdminVerified || !monitoringOpen) {
       return;
     }
     return subscribeAllParticipants((usersList) => {
       setCloudUsers(usersList);
     });
+  }, [isAdminVerified, monitoringOpen]);
+
+  // Clear admin cloud list on sign-out
+  useEffect(() => {
+    if (!isAdminVerified) {
+      setCloudUsers([]);
+    }
   }, [isAdminVerified]);
 
-  // Backfill shared non-PII summary map whenever Admin receives cloud users so Servants can read progress
+  // Backfill sharded non-PII summary buckets whenever Admin views cloud users
   useEffect(() => {
-    if (!isAdminVerified || cloudUsers.length === 0) return;
+    if (!isAdminVerified || !monitoringOpen || cloudUsers.length === 0) return;
     void backfillParticipantsSummaryInCloud(cloudUsers, stateRef.current.config);
-  }, [isAdminVerified, cloudUsers]);
+  }, [isAdminVerified, monitoringOpen, cloudUsers]);
 
   const activeUser: UserAccount | null = useMemo(() => {
     if (!state.activeUserId) return null;
@@ -354,16 +361,31 @@ export function useAppState() {
     });
   }, [activeUser?.cloudId, activeUser?.id]);
 
-  // Listen to shared progress summary for Servants (and Admin)
+  const summaryCountRef = useRef(0);
+  summaryCountRef.current = summaryUsers.length;
+
+  // Fetch sharded progress summary ONLY when Servant/Admin opens the monitoring panel (with 15s cooldown)
   useEffect(() => {
     if (!canViewAllUsers) {
       setSummaryUsers([]);
       return;
     }
-    return subscribeParticipantsSummary((usersList) => {
-      setSummaryUsers(usersList);
+    if (!monitoringOpen) return;
+    const now = Date.now();
+    if (now - lastSummaryFetchAtRef.current < 15000 && summaryCountRef.current > 0) {
+      return;
+    }
+    let cancelled = false;
+    lastSummaryFetchAtRef.current = now;
+    void fetchParticipantsSummaryOnce().then((res) => {
+      if (!cancelled && res.ok) {
+        setSummaryUsers(res.users);
+      }
     });
-  }, [canViewAllUsers]);
+    return () => {
+      cancelled = true;
+    };
+  }, [canViewAllUsers, monitoringOpen]);
 
   const refreshCloudUsers = useCallback(async (): Promise<boolean> => {
     if (isAdminVerified) {
@@ -375,6 +397,7 @@ export function useAppState() {
         setCloudUsers(allRes.users);
       }
       if (sumRes.ok) {
+        lastSummaryFetchAtRef.current = Date.now();
         setSummaryUsers(sumRes.users);
       }
       return allRes.ok;
@@ -382,6 +405,7 @@ export function useAppState() {
     if (isServant) {
       const sumRes = await fetchParticipantsSummaryOnce();
       if (sumRes.ok) {
+        lastSummaryFetchAtRef.current = Date.now();
         setSummaryUsers(sumRes.users);
       }
       return sumRes.ok;
@@ -598,14 +622,55 @@ export function useAppState() {
     void ensureCloudRecord();
   }, [activeUser?.id]);
 
-  const scheduleCloudSync = useCallback((user: UserAccount) => {
+  const flushPendingCloudSync = useCallback(() => {
     if (syncTimerRef.current) {
       window.clearTimeout(syncTimerRef.current);
+      syncTimerRef.current = null;
     }
-    syncTimerRef.current = window.setTimeout(() => {
-      void syncParticipantProgressToCloud(user, stateRef.current.config);
-    }, 250);
+    const pending = pendingSyncRef.current;
+    if (!pending) return;
+    pendingSyncRef.current = null;
+    void syncParticipantProgressToCloud(pending.user, stateRef.current.config, {
+      skipSummary: !pending.needsSummary,
+      skipPreRead: true,
+    });
   }, []);
+
+  const scheduleCloudSync = useCallback(
+    (user: UserAccount, needsSummary = true) => {
+      const prevNeedsSummary = pendingSyncRef.current?.needsSummary || false;
+      pendingSyncRef.current = {
+        user,
+        needsSummary: prevNeedsSummary || needsSummary,
+      };
+      if (syncTimerRef.current) {
+        window.clearTimeout(syncTimerRef.current);
+      }
+      syncTimerRef.current = window.setTimeout(() => {
+        flushPendingCloudSync();
+      }, 1500);
+    },
+    [flushPendingCloudSync]
+  );
+
+  // Flush any queued progress write immediately if the user backgrounds or closes the tab/PWA
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        flushPendingCloudSync();
+      }
+    };
+    const onPageHide = () => {
+      flushPendingCloudSync();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('pagehide', onPageHide);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('pagehide', onPageHide);
+      flushPendingCloudSync();
+    };
+  }, [flushPendingCloudSync]);
 
   const registerUser = useCallback(
     async (rawName: string, rawPin: string): Promise<{ ok: boolean; error?: string }> => {
@@ -797,8 +862,9 @@ export function useAppState() {
   );
 
   const logoutUser = useCallback(() => {
+    flushPendingCloudSync();
     setState((prev) => ({ ...prev, activeUserId: null }));
-  }, []);
+  }, [flushPendingCloudSync]);
 
   const toggleLang = useCallback(() => {
     setState((prev) => ({ ...prev, lang: prev.lang === 'ar' ? 'en' : 'ar' }));
@@ -835,7 +901,8 @@ export function useAppState() {
   }, [activeUser?.currentDay, state.config.sequentialLock, maxUnlockedDay, totalDays]);
 
   const updateActiveUser = useCallback(
-    (updater: (u: UserAccount) => UserAccount) => {
+    (updater: (u: UserAccount) => UserAccount, options?: { syncSummary?: boolean }) => {
+      const syncSummary = options?.syncSummary !== false;
       setState((prev) => {
         if (!prev.activeUserId || !prev.users[prev.activeUserId]) return prev;
         const base = prev.users[prev.activeUserId];
@@ -843,7 +910,7 @@ export function useAppState() {
           ...updater(base),
           updatedAt: Date.now(),
         };
-        scheduleCloudSync(updated);
+        scheduleCloudSync(updated, syncSummary);
         return {
           ...prev,
           users: {
@@ -862,7 +929,7 @@ export function useAppState() {
       if (state.config.sequentialLock && clamped > maxUnlockedDay) {
         return false;
       }
-      updateActiveUser((u) => ({ ...u, currentDay: clamped }));
+      updateActiveUser((u) => ({ ...u, currentDay: clamped }), { syncSummary: false });
       return true;
     },
     [state.config.sequentialLock, maxUnlockedDay, totalDays, updateActiveUser]
@@ -957,7 +1024,7 @@ export function useAppState() {
   const setReaderFontSize = useCallback(
     (size: number) => {
       const clamped = Math.max(16, Math.min(30, size));
-      updateActiveUser((u) => ({ ...u, readerFontSize: clamped }));
+      updateActiveUser((u) => ({ ...u, readerFontSize: clamped }), { syncSummary: false });
     },
     [updateActiveUser]
   );
@@ -967,7 +1034,7 @@ export function useAppState() {
     const targetDay = state.config.sequentialLock
       ? Math.min(todayDay, maxUnlockedDay)
       : todayDay;
-    updateActiveUser((u) => ({ ...u, currentDay: targetDay }));
+    updateActiveUser((u) => ({ ...u, currentDay: targetDay }), { syncSummary: false });
     return { targetDay, wasCapped: state.config.sequentialLock && todayDay > maxUnlockedDay };
   }, [userStartDate, totalDays, state.config.sequentialLock, maxUnlockedDay, updateActiveUser]);
 

@@ -534,30 +534,68 @@ function buildSummaryEntry(user: UserAccount, docId: string, config: AppConfig) 
   };
 }
 
+const SUMMARY_SHARD_COUNT = 32;
+const ALL_SUMMARY_SHARD_IDS: string[] = Array.from(
+  { length: SUMMARY_SHARD_COUNT },
+  (_, i) => `shard_${String(i).padStart(2, '0')}`
+);
+
+export function getSummaryShardId(docId: string): string {
+  const hexPrefix = docId.startsWith('p_') ? docId.slice(2, 4) : '';
+  const parsed = /^[0-9a-fA-F]{2}$/.test(hexPrefix)
+    ? parseInt(hexPrefix, 16)
+    : Array.from(docId).reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
+  const idx = Math.abs(parsed) % SUMMARY_SHARD_COUNT;
+  return `shard_${String(idx).padStart(2, '0')}`;
+}
+
+function isFirestoreNotFoundError(err: unknown): boolean {
+  const code = (err as { code?: string })?.code || '';
+  const msg = err instanceof Error ? err.message : String(err);
+  return (
+    code === 'not-found' ||
+    msg.includes('No document to update') ||
+    msg.includes('NOT_FOUND')
+  );
+}
+
 export async function upsertParticipantSummaryInCloud(
   user: UserAccount,
   config: AppConfig
 ): Promise<void> {
   const nameKey = normalizeNameKey(user.fullName);
   const docId = user.cloudId || (await getParticipantDocId(nameKey));
-  const summaryRef = doc(db, 'participants_summary', 'main');
+  const shardId = getSummaryShardId(docId);
+  const summaryRef = doc(db, 'participants_summary', shardId);
   const entry = buildSummaryEntry(user, docId, config);
   const now = Date.now();
   try {
-    const snap = await getDoc(summaryRef);
-    if (!snap.exists()) {
-      await setDoc(summaryRef, {
-        entries: { [docId]: entry },
-        updatedAt: now,
-      });
-    } else {
-      await updateDoc(summaryRef, {
-        [`entries.${docId}`]: entry,
-        updatedAt: now,
-      });
-    }
+    await updateDoc(summaryRef, {
+      [`entries.${docId}`]: entry,
+      updatedAt: now,
+    });
   } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, 'participants_summary/main');
+    if (isFirestoreNotFoundError(err)) {
+      try {
+        await setDoc(summaryRef, {
+          entries: { [docId]: entry },
+          updatedAt: now,
+        });
+        return;
+      } catch (createErr) {
+        try {
+          await updateDoc(summaryRef, {
+            [`entries.${docId}`]: entry,
+            updatedAt: now,
+          });
+          return;
+        } catch {
+          handleFirestoreError(createErr, OperationType.WRITE, `participants_summary/${shardId}`);
+        }
+      }
+      return;
+    }
+    handleFirestoreError(err, OperationType.WRITE, `participants_summary/${shardId}`);
   }
 }
 
@@ -566,35 +604,57 @@ export async function backfillParticipantsSummaryInCloud(
   config: AppConfig
 ): Promise<void> {
   if (users.length === 0) return;
-  const summaryRef = doc(db, 'participants_summary', 'main');
-  try {
-    const snap = await getDoc(summaryRef);
-    const existingEntries = snap.exists()
-      ? ((snap.data()?.entries as Record<string, Record<string, unknown>>) || {})
-      : {};
-    let changed = false;
-    const nextEntries: Record<string, Record<string, unknown>> = { ...existingEntries };
 
-    for (const u of users) {
-      const nameKey = normalizeNameKey(u.fullName);
-      const docId = u.cloudId || (await getParticipantDocId(nameKey));
-      const prev = existingEntries[docId];
-      const prevTs = typeof prev?.updatedAt === 'number' ? prev.updatedAt : 0;
-      const curTs = u.updatedAt || 0;
-      if (!prev || curTs > prevTs || prev.role !== (u.role || 'member')) {
-        nextEntries[docId] = buildSummaryEntry(u, docId, config);
-        changed = true;
+  const grouped = new Map<string, { docId: string; user: UserAccount }[]>();
+  for (const u of users) {
+    const nameKey = normalizeNameKey(u.fullName);
+    const docId = u.cloudId || (await getParticipantDocId(nameKey));
+    const shardId = getSummaryShardId(docId);
+    const bucket = grouped.get(shardId) || [];
+    bucket.push({ docId, user: u });
+    grouped.set(shardId, bucket);
+  }
+
+  for (const [shardId, bucket] of grouped.entries()) {
+    const summaryRef = doc(db, 'participants_summary', shardId);
+    try {
+      const snap = await getDoc(summaryRef);
+      const existingEntries = snap.exists()
+        ? ((snap.data()?.entries as Record<string, Record<string, unknown>>) || {})
+        : {};
+      const dotUpdates: Record<string, unknown> = {};
+      const initialEntries: Record<string, Record<string, unknown>> = {};
+      let changedCount = 0;
+
+      for (const { docId, user } of bucket) {
+        const prev = existingEntries[docId];
+        const prevTs = typeof prev?.updatedAt === 'number' ? prev.updatedAt : 0;
+        const curTs = user.updatedAt || 0;
+        if (!prev || curTs > prevTs || prev.role !== (user.role || 'member')) {
+          const entry = buildSummaryEntry(user, docId, config);
+          dotUpdates[`entries.${docId}`] = entry;
+          initialEntries[docId] = entry;
+          changedCount++;
+        }
       }
-    }
 
-    if (changed || !snap.exists()) {
-      await setDoc(summaryRef, {
-        entries: nextEntries,
-        updatedAt: Date.now(),
-      });
+      if (changedCount === 0 && snap.exists()) continue;
+
+      const now = Date.now();
+      if (!snap.exists()) {
+        await setDoc(summaryRef, {
+          entries: initialEntries,
+          updatedAt: now,
+        });
+      } else {
+        await updateDoc(summaryRef, {
+          ...dotUpdates,
+          updatedAt: now,
+        });
+      }
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `participants_summary/${shardId}`);
     }
-  } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, 'participants_summary/main');
   }
 }
 
@@ -640,15 +700,51 @@ export async function createParticipantInCloud(
 
 export async function syncParticipantProgressToCloud(
   user: UserAccount,
-  config: AppConfig
+  config: AppConfig,
+  options?: { skipSummary?: boolean; skipPreRead?: boolean }
 ): Promise<void> {
+  const { skipSummary = false, skipPreRead = false } = options || {};
   const nameKey = normalizeNameKey(user.fullName);
   const docId = user.cloudId || (await getParticipantDocId(nameKey));
   const ref = doc(db, 'participants', docId);
   const metrics = computeParticipantProgressFields(user, config);
   const now = Date.now();
 
+  const updatePayload: Record<string, unknown> = {
+    currentDay: Math.max(1, Math.min(200, user.currentDay || 1)),
+    completedDays: (user.completedDays || [])
+      .filter((d) => typeof d === 'number' && Number.isFinite(d))
+      .slice(0, 200),
+    passedChapters: user.passedChapters || {},
+    checkedPractices: user.checkedPractices || {},
+    competitionAnswers: user.competitionAnswers || {},
+    readerFontSize: Math.max(12, Math.min(40, user.readerFontSize || 21)),
+    completedChapters: metrics.completedChapters,
+    percent: metrics.percent,
+    streak: metrics.streak,
+    updatedAt: now,
+  };
+
   try {
+    if (skipPreRead) {
+      try {
+        await updateDoc(ref, updatePayload);
+        if (!skipSummary) {
+          void upsertParticipantSummaryInCloud({ ...user, cloudId: docId, updatedAt: now }, config);
+        }
+        return;
+      } catch (fastErr) {
+        if (!isFirestoreNotFoundError(fastErr)) {
+          throw fastErr;
+        }
+        const pinHash =
+          user.pinHash || (user.pin ? await hashParticipantPin(nameKey, user.pin) : '');
+        if (!pinHash) return;
+        await createParticipantInCloud(user, pinHash, config);
+        return;
+      }
+    }
+
     const existingSnap = await getDoc(ref);
     if (!existingSnap.exists()) {
       const pinHash =
@@ -666,21 +762,6 @@ export async function syncParticipantProgressToCloud(
       ? existingData.completedDays.length
       : 0;
 
-    const updatePayload: Record<string, unknown> = {
-      currentDay: Math.max(1, Math.min(200, user.currentDay || 1)),
-      completedDays: (user.completedDays || [])
-        .filter((d) => typeof d === 'number' && Number.isFinite(d))
-        .slice(0, 200),
-      passedChapters: user.passedChapters || {},
-      checkedPractices: user.checkedPractices || {},
-      competitionAnswers: user.competitionAnswers || {},
-      readerFontSize: Math.max(12, Math.min(40, user.readerFontSize || 21)),
-      completedChapters: metrics.completedChapters,
-      percent: metrics.percent,
-      streak: metrics.streak,
-      updatedAt: now,
-    };
-
     if (
       existingCompletedCount === 0 &&
       (user.completedDays || []).length === 0 &&
@@ -691,7 +772,9 @@ export async function syncParticipantProgressToCloud(
     }
 
     await updateDoc(ref, updatePayload);
-    void upsertParticipantSummaryInCloud({ ...user, cloudId: docId, updatedAt: now }, config);
+    if (!skipSummary) {
+      void upsertParticipantSummaryInCloud({ ...user, cloudId: docId, updatedAt: now }, config);
+    }
   } catch (err: unknown) {
     handleFirestoreError(err, OperationType.UPDATE, `participants/${docId}`);
   }
@@ -869,15 +952,31 @@ export async function fetchParticipantsSummaryOnce(): Promise<{
   users: UserAccount[];
 }> {
   try {
-    const snap = await getDoc(doc(db, 'participants_summary', 'main'));
-    if (!snap.exists()) return { ok: true, users: [] };
-    const entries = (snap.data()?.entries as Record<string, Record<string, unknown>>) || {};
-    const list = Object.entries(entries).map(([docId, entry]) =>
+    const idsToFetch = ['main', ...ALL_SUMMARY_SHARD_IDS];
+    const snaps = await Promise.all(
+      idsToFetch.map((id) => getDoc(doc(db, 'participants_summary', id)))
+    );
+    const mergedMap = new Map<string, Record<string, unknown>>();
+
+    for (const snap of snaps) {
+      if (!snap.exists()) continue;
+      const entries = (snap.data()?.entries as Record<string, Record<string, unknown>>) || {};
+      for (const [docId, entry] of Object.entries(entries)) {
+        const prev = mergedMap.get(docId);
+        const prevTs = typeof prev?.updatedAt === 'number' ? prev.updatedAt : 0;
+        const nextTs = typeof entry?.updatedAt === 'number' ? entry.updatedAt : 0;
+        if (!prev || nextTs >= prevTs) {
+          mergedMap.set(docId, entry);
+        }
+      }
+    }
+
+    const list = Array.from(mergedMap.entries()).map(([docId, entry]) =>
       mapParticipantDoc(docId, entry)
     );
     return { ok: true, users: list };
   } catch (error) {
-    handleFirestoreError(error, OperationType.GET, 'participants_summary/main');
+    handleFirestoreError(error, OperationType.GET, 'participants_summary');
     return { ok: false, users: [] };
   }
 }

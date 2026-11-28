@@ -230,7 +230,7 @@
     },
     "ParticipantsSummary": {
       "title": "ParticipantsSummary",
-      "description": "Non-sensitive summary map of participant progress readable by promoted Servants and Developers.",
+      "description": "Sharded non-sensitive summary map of participant progress (shard_00..shard_31 and legacy main) readable by promoted Servants and Developers.",
       "type": "object",
       "properties": {
         "entries": {
@@ -254,7 +254,7 @@
     },
     "/participants_summary/{summaryId}": {
       "schema": { "$ref": "#/entities/ParticipantsSummary" },
-      "description": "Non-PII progress summary map (no pinHash) for promoted servants and developers."
+      "description": "Sharded non-PII progress summary maps (shard_00..shard_31 and legacy main, no pinHash) for promoted servants and developers."
     },
     "/admins/{uid}": {
       "schema": { "$ref": "#/entities/AdminUser" },

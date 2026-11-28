@@ -212,6 +212,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [userSearch, setUserSearch] = useState('');
   const [userSort, setUserSort] = useState<'progress' | 'recent' | 'name'>('progress');
   const [expandedUserIds, setExpandedUserIds] = useState<Record<string, boolean>>({});
+  const [visibleUsersCount, setVisibleUsersCount] = useState(50);
   const [refreshingUsers, setRefreshingUsers] = useState(false);
   const [promotingId, setPromotingId] = useState<string | null>(null);
 
@@ -229,6 +230,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       setHasChanges(false);
       setEditLang(lang);
       setExpandedUserIds({});
+      setVisibleUsersCount(50);
     }
     wasOpenRef.current = isOpen;
   }, [isOpen, config, lang]);
@@ -1240,7 +1242,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     </div>
                   ) : (
                     <div className="space-y-2.5">
-                      {filteredUserRows.map((row) => {
+                      {filteredUserRows.slice(0, visibleUsersCount).map((row) => {
                         const rowKey = row.user.cloudId || row.user.id;
                         const isActive = row.user.id === activeUserId;
                         const isDetailOpen = Boolean(expandedUserIds[rowKey]);
@@ -1466,6 +1468,26 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           </div>
                         );
                       })}
+                      {filteredUserRows.length > visibleUsersCount && (
+                        <div className="pt-2 flex flex-wrap items-center justify-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setVisibleUsersCount((c) => c + 50)}
+                            className="min-h-[38px] px-4 py-1.5 app-control border border-stone-300 dark:border-white/15 bg-white dark:bg-white/5 hover:bg-stone-100 dark:hover:bg-white/10 text-xs font-bold text-stone-700 dark:text-stone-200 cursor-pointer"
+                          >
+                            {lang === 'ar'
+                              ? `عرض المزيد (${formatNumber(Math.min(50, filteredUserRows.length - visibleUsersCount), 'ar')} من ${formatNumber(filteredUserRows.length - visibleUsersCount, 'ar')} متبقٍ)`
+                              : `Show ${Math.min(50, filteredUserRows.length - visibleUsersCount)} more (${filteredUserRows.length - visibleUsersCount} left)`}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setVisibleUsersCount(filteredUserRows.length)}
+                            className="min-h-[38px] px-3 py-1.5 app-control border border-stone-200 dark:border-white/10 text-xs font-semibold text-stone-500 dark:text-stone-400 hover:text-[var(--accent)] cursor-pointer"
+                          >
+                            {lang === 'ar' ? 'عرض الكل' : 'Show all'}
+                          </button>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

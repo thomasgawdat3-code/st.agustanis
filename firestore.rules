@@ -182,22 +182,28 @@ service cloud.firestore {
       allow delete: if isAdmin() && isValidId(participantId);
     }
 
-    // Non-sensitive participant progress summary map (no pinHash) for promoted Servants and Developers
+    function isValidSummaryId(summaryId) {
+      return summaryId == 'main' || summaryId.matches('^shard_(0[0-9]|1[0-9]|2[0-9]|3[0-1])$');
+    }
+
+    // Non-sensitive participant progress summary shards (no pinHash) for promoted Servants and Developers
     match /participants_summary/{summaryId} {
-      allow get: if isValidId(summaryId) && summaryId == 'main';
+      allow get: if isValidId(summaryId) && isValidSummaryId(summaryId);
       allow list: if false;
       allow create: if isValidId(summaryId)
-        && summaryId == 'main'
+        && isValidSummaryId(summaryId)
         && incoming().keys().hasAll(['entries', 'updatedAt'])
         && incoming().keys().hasOnly(['entries', 'updatedAt'])
         && incoming().entries is map
+        && incoming().entries.size() <= 400
         && incoming().updatedAt is number;
       allow update: if resource != null
         && isValidId(summaryId)
-        && summaryId == 'main'
+        && isValidSummaryId(summaryId)
         && incoming().keys().hasAll(['entries', 'updatedAt'])
         && incoming().keys().hasOnly(['entries', 'updatedAt'])
         && incoming().entries is map
+        && incoming().entries.size() <= 400
         && incoming().updatedAt is number;
       allow delete: if false;
     }

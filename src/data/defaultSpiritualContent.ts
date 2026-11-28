@@ -315,7 +315,7 @@ export const DEFAULT_PRACTICES: WeeklyPractice[] = [
   {
     id: 'w1-2',
     week: 1,
-    textAr: 'قراءة الورد اليومي من إنجيل متى بانتظام دون تأجيل.',
+    textAr: 'القراءة اليومية من إنجيل متى بانتظام دون تأجيل.',
     textEn: 'Read the daily portion from the Gospel of Matthew consistently without delay.',
   },
   {
